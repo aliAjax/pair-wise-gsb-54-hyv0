@@ -1,20 +1,24 @@
 """跨海光缆故障与抢修协调领域规则与状态转换。"""
 from typing import Any, Dict, Iterable, Tuple
 
-from .domain import Actor, Conflict, ValidationError, boolean, choice, integer, number, text, text_list
+from .domain import Actor, Conflict, ValidationError, boolean, choice, integer, iso_dt, number, text, text_list
 
 
 INITIAL_STATE = "detected"
 CREATE_ROLES = {'noc_operator'}
-ACTION_ROLES = {'approve': {'repair_manager'}, 'mobilize': {'vessel_master'}, 'survey': {'cable_engineer'}, 'splice': {'cable_engineer'}, 'test': {'noc_operator'}, 'restore': {'noc_operator', 'repair_manager'}, 'cancel': {'repair_manager'}}
-TRANSITIONS = {'approve': {'detected': 'approved'}, 'mobilize': {'approved': 'mobilized'}, 'survey': {'mobilized': 'surveyed'}, 'splice': {'surveyed': 'spliced'}, 'test': {'spliced': 'tested'}, 'restore': {'tested': 'restored'}, 'cancel': {'detected': 'cancelled', 'approved': 'cancelled', 'mobilized': 'cancelled'}}
+DISPATCH_ROLES = {'dispatcher'}
+ACTION_ROLES = {'approve': {'repair_manager'}, 'mobilize': {'vessel_master'}, 'survey': {'cable_engineer'}, 'splice': {'cable_engineer'}, 'splice_failed': {'cable_engineer', 'repair_manager'}, 'test': {'noc_operator'}, 'restore': {'noc_operator', 'repair_manager'}, 'return': {'vessel_master', 'repair_manager'}, 'cancel': {'repair_manager', 'vessel_master'}}
+TRANSITIONS = {'approve': {'detected': 'approved'}, 'mobilize': {'approved': 'mobilized'}, 'survey': {'mobilized': 'surveyed'}, 'splice': {'surveyed': 'spliced'}, 'splice_failed': {'surveyed': 'splice_failed'}, 'test': {'spliced': 'tested'}, 'restore': {'tested': 'restored'}, 'return': {'mobilized': 'returned', 'surveyed': 'returned', 'splice_failed': 'returned'}, 'cancel': {'detected': 'cancelled', 'approved': 'cancelled', 'mobilized': 'cancelled', 'surveyed': 'cancelled'}}
+# 资源占用需要释放或结算的终态
+RESOURCE_TERMINAL_STATES = {'restored', 'cancelled', 'returned', 'splice_failed'}
+RESOURCE_ACTIVE_STATES = {'approved', 'mobilized', 'surveyed', 'spliced', 'tested'}
 
 
 class DomainRules:
     INITIAL_STATE = INITIAL_STATE
 
     def known_role(self, role: str) -> bool:
-        all_roles = set(CREATE_ROLES)
+        all_roles = set(CREATE_ROLES) | set(DISPATCH_ROLES)
         for roles in ACTION_ROLES.values():
             all_roles.update(roles)
         return role == "admin" or role in all_roles
@@ -56,6 +60,19 @@ class DomainRules:
                 continue
             if float(payload["start_km"]) < float(item["payload"].get("end_km", 0)) and float(payload["end_km"]) > float(item["payload"].get("start_km", 0)):
                 raise Conflict("同一光缆区段已有未结束抢修")
+
+    def validate_occupation(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """校验动员前的资源占用登记：船机、接续班组、备缆批次、占用公里数与时间窗。"""
+        out: Dict[str, Any] = {}
+        out["vessel_name"] = text(data, "vessel_name")
+        out["splice_crew"] = text(data, "splice_crew")
+        out["batch_no"] = text(data, "batch_no")
+        out["reserve_km"] = number(data, "reserve_km", 0.01)
+        out["window_start"] = iso_dt(data, "window_start")
+        out["window_end"] = iso_dt(data, "window_end")
+        if not (out["window_start"] < out["window_end"]):
+            raise ValidationError("占用时间窗开始必须早于结束")
+        return out
 
     def require_transition(self, record: Dict[str, Any], action: str) -> str:
         allowed = TRANSITIONS.get(action, {}).get(record["state"])
@@ -99,6 +116,10 @@ class DomainRules:
             changes["splice_loss_db"] = loss
             changes["spare_used_km"] = float(data["spare_used_km"])
             summary = "光缆接续完成"
+        elif action == "splice_failed":
+            changes["failure_reason"] = text(data, "failure_reason")
+            changes["spare_consumed_km"] = number(data, "consumed_km", 0)
+            summary = "接续失败，释放未消耗占用"
         elif action == "test":
             end_loss = number(data, "end_to_end_loss_db", 0)
             if end_loss > 0.5:
@@ -114,6 +135,9 @@ class DomainRules:
             summary = "通信恢复"
         elif action == "cancel":
             changes["cancel_reason"] = text(data, "cancel_reason")
-            summary = "抢修取消"
+            summary = "抢修取消，释放资源占用"
+        elif action == "return":
+            changes["return_reason"] = text(data, "return_reason")
+            summary = "船机回港，释放资源占用"
         p.update(changes)
         return new_state, p, summary or ("已执行%s" % action)

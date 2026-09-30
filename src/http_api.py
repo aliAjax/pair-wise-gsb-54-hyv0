@@ -12,6 +12,11 @@ from .domain import Actor, DomainError, PermissionDenied, ValidationError
 RECORD_RE = re.compile(r"^/api/records/(\d+)$")
 ACTION_RE = re.compile(r"^/api/records/(\d+)/actions/([a-z_]+)$")
 AUDIT_RE = re.compile(r"^/api/records/(\d+)/audit$")
+OCCUPATION_RE = re.compile(r"^/api/records/(\d+)/occupation$")
+OCCUPATION_CANCEL_RE = re.compile(r"^/api/records/(\d+)/occupation/cancel$")
+REGISTER_OCC_RE = re.compile(r"^/api/records/(\d+)/occupations$")
+CONFIRM_OCC_RE = re.compile(r"^/api/occupations/(\d+)/confirm$")
+REVIEW_RESOLVE_RE = re.compile(r"^/api/records/(\d+)/review/resolve$")
 
 
 def make_handler(service: Any, static_dir: Path):
@@ -57,7 +62,11 @@ def make_handler(service: Any, static_dir: Path):
 
         def _handle_error(self, exc: Exception) -> None:
             if isinstance(exc, DomainError):
-                self._send(exc.status, {"error": exc.code, "message": str(exc)})
+                payload = {"error": exc.code, "message": str(exc)}
+                context = getattr(exc, "context", None)
+                if context:
+                    payload["context"] = context
+                self._send(exc.status, payload)
             else:
                 self._send(500, {"error": "internal_error", "message": "服务内部错误"})
 
@@ -87,6 +96,20 @@ def make_handler(service: Any, static_dir: Path):
                 if parsed.path == "/api/stats":
                     self._send(200, service.stats(self._actor()))
                     return
+                if parsed.path == "/api/spare-batches":
+                    self._send(200, {"items": service.list_spare_batches(self._actor())})
+                    return
+                if parsed.path == "/api/occupations":
+                    query = parse_qs(parsed.query)
+                    self._send(200, {"items": service.list_occupations(self._actor(), status=query.get("status", [None])[0])})
+                    return
+                if parsed.path == "/api/reviews":
+                    self._send(200, {"items": service.list_reviews(self._actor())})
+                    return
+                match = OCCUPATION_RE.match(parsed.path)
+                if match:
+                    self._send(200, service.get_occupation(self._actor(), int(match.group(1))))
+                    return
                 self._send(404, {"error": "not_found", "message": "路径不存在"})
             except Exception as exc:
                 self._handle_error(exc)
@@ -98,6 +121,29 @@ def make_handler(service: Any, static_dir: Path):
                 if parsed.path == "/api/records":
                     record = service.create(self._actor(), body.get("reference", ""), body.get("data", {}))
                     self._send(201, record)
+                    return
+                if parsed.path == "/api/spare-batches":
+                    batch = service.register_spare_batch(self._actor(), body.get("batch_no", ""), body.get("total_km", 0))
+                    self._send(201, batch)
+                    return
+                if parsed.path == "/api/occupations/backfill":
+                    self._send(200, service.backfill_legacy_occupations(self._actor()))
+                    return
+                match = REGISTER_OCC_RE.match(parsed.path)
+                if match:
+                    self._send(201, service.register_occupation(self._actor(), int(match.group(1)), body.get("data", {})))
+                    return
+                match = CONFIRM_OCC_RE.match(parsed.path)
+                if match:
+                    self._send(200, service.confirm_occupation(self._actor(), int(match.group(1))))
+                    return
+                match = REVIEW_RESOLVE_RE.match(parsed.path)
+                if match:
+                    self._send(200, service.resolve_review(self._actor(), int(match.group(1)), body.get("data", {})))
+                    return
+                match = OCCUPATION_CANCEL_RE.match(parsed.path)
+                if match:
+                    self._send(200, service.cancel_occupation(self._actor(), int(match.group(1))))
                     return
                 match = ACTION_RE.match(parsed.path)
                 if match:

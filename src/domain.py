@@ -1,5 +1,6 @@
 """领域基础类型与输入校验。"""
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Dict, List
 
 
@@ -21,6 +22,16 @@ class NotFound(DomainError):
 class Conflict(DomainError):
     status = 409
     code = "conflict"
+
+
+class ResourceConflict(Conflict):
+    """资源台账冲突：船机/班组时间窗撞单、备缆余量被并发占用等。"""
+
+    code = "resource_conflict"
+
+    def __init__(self, message: str, context: Dict[str, Any] = None) -> None:
+        super().__init__(message)
+        self.context = context or {}
 
 
 class PermissionDenied(DomainError):
@@ -95,3 +106,26 @@ def text_list(data: Dict[str, Any], key: str, minimum: int = 0) -> List[str]:
     if len(value) < minimum:
         raise ValidationError("%s至少需要%s项" % (key, minimum))
     return [item.strip() for item in value]
+
+
+def iso_dt(data: Dict[str, Any], key: str) -> str:
+    """校验并归一化UTC时间窗字段，返回秒精度ISO字符串。"""
+    raw = text(data, key)
+    normalized = raw.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise ValidationError("%s必须是ISO-8601时间" % key) from exc
+    return parsed.isoformat()
+
+
+def parse_iso(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        from datetime import timezone
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def windows_overlap(start_a: str, end_a: str, start_b: str, end_b: str) -> bool:
+    return parse_iso(start_a) < parse_iso(end_b) and parse_iso(start_b) < parse_iso(end_a)
