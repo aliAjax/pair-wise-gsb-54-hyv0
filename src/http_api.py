@@ -12,6 +12,11 @@ from .domain import Actor, DomainError, PermissionDenied, ValidationError
 RECORD_RE = re.compile(r"^/api/records/(\d+)$")
 ACTION_RE = re.compile(r"^/api/records/(\d+)/actions/([a-z_]+)$")
 AUDIT_RE = re.compile(r"^/api/records/(\d+)/audit$")
+OCCUPATIONS_RE = re.compile(r"^/api/records/(\d+)/occupations$")
+OCCUPATION_CONFIRM_RE = re.compile(r"^/api/records/(\d+)/occupations/confirm$")
+RECONCILE_RE = re.compile(r"^/api/records/(\d+)/reconcile$")
+BATCH_RE = re.compile(r"^/api/batches/([^/]+)$")
+BATCH_RESTOCK_RE = re.compile(r"^/api/batches/([^/]+)/restock$")
 
 
 def make_handler(service: Any, static_dir: Path):
@@ -57,7 +62,10 @@ def make_handler(service: Any, static_dir: Path):
 
         def _handle_error(self, exc: Exception) -> None:
             if isinstance(exc, DomainError):
-                self._send(exc.status, {"error": exc.code, "message": str(exc)})
+                payload = {"error": exc.code, "message": str(exc)}
+                if getattr(exc, "details", None):
+                    payload["details"] = exc.details
+                self._send(exc.status, payload)
             else:
                 self._send(500, {"error": "internal_error", "message": "服务内部错误"})
 
@@ -75,6 +83,23 @@ def make_handler(service: Any, static_dir: Path):
                     query = parse_qs(parsed.query)
                     records = service.list_records(self._actor(), state=query.get("state", [None])[0], limit=int(query.get("limit", ["100"])[0]))
                     self._send(200, {"items": records})
+                    return
+                if parsed.path == "/api/occupations":
+                    query = parse_qs(parsed.query)
+                    items = service.list_occupations(
+                        self._actor(), status=query.get("status", [None])[0], limit=int(query.get("limit", ["200"])[0])
+                    )
+                    self._send(200, {"items": items})
+                    return
+                if parsed.path == "/api/pending":
+                    self._send(200, {"items": service.list_pending(self._actor())})
+                    return
+                if parsed.path == "/api/batches":
+                    self._send(200, {"items": service.list_batches(self._actor())})
+                    return
+                match = BATCH_RE.match(parsed.path)
+                if match:
+                    self._send(200, service.get_batch(self._actor(), match.group(1)))
                     return
                 match = RECORD_RE.match(parsed.path)
                 if match:
@@ -98,6 +123,33 @@ def make_handler(service: Any, static_dir: Path):
                 if parsed.path == "/api/records":
                     record = service.create(self._actor(), body.get("reference", ""), body.get("data", {}))
                     self._send(201, record)
+                    return
+                if parsed.path == "/api/batches":
+                    batch = service.create_batch(self._actor(), body.get("batch_no", ""), body.get("total_km", 0), body)
+                    self._send(201, batch)
+                    return
+                if parsed.path == "/api/migrate/legacy":
+                    self._send(200, service.migrate_legacy(self._actor()))
+                    return
+                match = BATCH_RESTOCK_RE.match(parsed.path)
+                if match:
+                    batch = service.restock_batch(self._actor(), match.group(1), body.get("add_km", 0))
+                    self._send(200, batch)
+                    return
+                match = OCCUPATION_CONFIRM_RE.match(parsed.path)
+                if match:
+                    version = body.get("expected_version")
+                    if not isinstance(version, int):
+                        raise ValidationError("expected_version必须是整数")
+                    self._send(200, service.confirm_occupation(self._actor(), int(match.group(1)), version))
+                    return
+                match = OCCUPATIONS_RE.match(parsed.path)
+                if match:
+                    self._send(201, service.register_occupation(self._actor(), int(match.group(1)), body.get("data", {})))
+                    return
+                match = RECONCILE_RE.match(parsed.path)
+                if match:
+                    self._send(200, service.reconcile_occupation(self._actor(), int(match.group(1)), body.get("data", {})))
                     return
                 match = ACTION_RE.match(parsed.path)
                 if match:

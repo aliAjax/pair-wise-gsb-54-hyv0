@@ -4,10 +4,7 @@ from pathlib import Path
 
 from app import build_service
 from src.domain import Actor, Conflict, PermissionDenied
-
-
-CREATE_DATA = {'cable': 'SEA-1', 'segment': 'S3', 'start_km': 120.0, 'end_km': 135.0, 'depth_m': 1800.0, 'sea_state': 3, 'vessel_available': True, 'spare_length_km': 20.0, 'permit_valid': True, 'capacity_gbps': 400}
-FLOW = [('approve', 'repair_manager', {'repair_manager': 'RM-2'}, 'approved'), ('mobilize', 'vessel_master', {'weather_window_hours': 40, 'available_spare_km': 18, 'vessel_name': 'CS-1'}, 'mobilized'), ('survey', 'cable_engineer', {'survey_complete': True, 'fault_location_km': 128}, 'surveyed'), ('splice', 'cable_engineer', {'splice_loss_db': 0.12, 'spare_used_km': 16}, 'spliced'), ('test', 'noc_operator', {'end_to_end_loss_db': 0.3}, 'tested'), ('restore', 'noc_operator', {'traffic_restored': True, 'restore_capacity_gbps': 400}, 'restored')]
+from tests.test_workflow import CREATE_DATA, FLOW, prepare_resources
 
 
 class FailureTest(unittest.TestCase):
@@ -30,5 +27,21 @@ class FailureTest(unittest.TestCase):
         first = FLOW[0]
         record = self.service.act(Actor("operator", first[1]), record["id"], record["version"], first[0], first[2])
         second = FLOW[1]
+        prepare_resources(self.service, record["id"])
         with self.assertRaises(Conflict):
             self.service.act(Actor("operator", second[1]), record["id"], record["version"] - 1, second[0], second[2])
+
+    def test_mobilize_requires_confirmed_occupation(self):
+        record = self.service.create(Actor("creator", "noc_operator"), "CABLE-30002", CREATE_DATA)
+        record = self.service.act(Actor("rm", "repair_manager"), record["id"], record["version"], "approve", {"repair_manager": "RM-2"})
+        with self.assertRaises(Conflict):
+            self.service.act(Actor("vm", "vessel_master"), record["id"], record["version"], "mobilize",
+                             {"weather_window_hours": 40, "vessel_name": "CS-1"})
+
+    def test_mobilize_vessel_must_match_occupation(self):
+        record = self.service.create(Actor("creator", "noc_operator"), "CABLE-30003", CREATE_DATA)
+        record = self.service.act(Actor("rm", "repair_manager"), record["id"], record["version"], "approve", {"repair_manager": "RM-2"})
+        prepare_resources(self.service, record["id"], vessel="CS-1")
+        with self.assertRaises(Conflict):
+            self.service.act(Actor("vm", "vessel_master"), record["id"], record["version"], "mobilize",
+                             {"weather_window_hours": 40, "vessel_name": "CS-OTHER"})

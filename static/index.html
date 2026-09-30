@@ -9,14 +9,27 @@
     main { max-width: 960px; margin: auto; }
     button { padding: .55rem .9rem; cursor: pointer; }
     pre { background: #f4f6f8; padding: 1rem; overflow: auto; border-radius: 8px; }
-    .row { display: flex; gap: 1rem; align-items: center; }
+    .row { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; margin-bottom: .4rem; }
+    h2 { font-size: 1.05rem; margin-top: 1.6rem; }
   </style>
 </head>
 <body>
 <main>
   <h1>跨海光缆故障与抢修协调</h1>
-  <p>最小演示页。完整业务流程通过README中的JSON接口调用。</p>
-  <div class="row"><button id="load">加载记录</button><button id="stats">查看状态统计</button></div>
+  <p>最小演示页。抢修资源占用台账（船机 / 接续班组 / 备缆批次）与完整业务流程通过 README 中的 JSON 接口调用。</p>
+
+  <h2>抢修任务</h2>
+  <div class="row"><button data-path="/api/records?limit=20">加载记录</button><button data-path="/api/stats">状态统计</button></div>
+
+  <h2>资源占用台账</h2>
+  <div class="row">
+    <button data-path="/api/batches">备缆批次余量</button>
+    <button data-path="/api/occupations?limit=50">全部占用</button>
+    <button data-path="/api/occupations?status=confirmed">已确认占用</button>
+    <button data-path="/api/occupations?status=draft">草稿（含缺口）</button>
+    <button data-path="/api/pending">待核对任务</button>
+  </div>
+
   <pre id="output">点击上方按钮读取服务状态。</pre>
 </main>
 <script>
@@ -26,8 +39,9 @@ async function show(path) {
   const data = await response.json();
   document.getElementById("output").textContent = JSON.stringify(data, null, 2);
 }
-document.getElementById("load").onclick = () => show("/api/records?limit=20");
-document.getElementById("stats").onclick = () => show("/api/stats");
+document.querySelectorAll("button[data-path]").forEach(button => {
+  button.onclick = () => show(button.getAttribute("data-path"));
+});
 </script>
 </body>
 </html>
